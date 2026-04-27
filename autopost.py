@@ -2,58 +2,88 @@ import os
 import random
 import requests
 import json
-import urllib.parse
+import cloudinary
+from cloudinary.search import Search
+import cloudinary.uploader
 
-# 1. Environment Variables uthana (Webhook URL aur GitHub details)
+# ==========================================
+# 1. ENVIRONMENT VARIABLES (SECRETS) SETUP
+# ==========================================
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-GITHUB_REPO = os.getenv("GITHUB_REPOSITORY") # GitHub Actions automatically yeh deta hai (e.g., username/repo)
-GITHUB_BRANCH = os.getenv("GITHUB_REF_NAME", "main") # Current branch (mostly 'main')
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
+CLOUDINARY_FOLDER = os.getenv("CLOUDINARY_FOLDER", "auto_videos") # Default folder name
 
-if not WEBHOOK_URL:
-    print("❌ Error: WEBHOOK_URL secret GitHub mein set nahi hai!")
+# Check karna ki saare secrets set hain ya nahi
+missing_secrets = []
+for secret_name, secret_val in [("WEBHOOK_URL", WEBHOOK_URL), ("CLOUDINARY_CLOUD_NAME", CLOUDINARY_CLOUD_NAME), 
+                                ("CLOUDINARY_API_KEY", CLOUDINARY_API_KEY), ("CLOUDINARY_API_SECRET", CLOUDINARY_API_SECRET)]:
+    if not secret_val:
+        missing_secrets.append(secret_name)
+
+if missing_secrets:
+    print(f"❌ Error: Yeh secrets set nahi hain: {', '.join(missing_secrets)}")
     exit(1)
 
-# Folders aur Files
-VIDEO_DIR = "video"
+# ==========================================
+# 2. CLOUDINARY CONFIGURATION
+# ==========================================
+cloudinary.config(
+  cloud_name = CLOUDINARY_CLOUD_NAME,
+  api_key = CLOUDINARY_API_KEY,
+  api_secret = CLOUDINARY_API_SECRET,
+  secure = True
+)
+
+# ==========================================
+# 3. HISTORY FILE (Log maintain karne ke liye)
+# ==========================================
 HISTORY_FILE = "history.txt"
-
-# Check karna ki video folder hai ya nahi
-if not os.path.exists(VIDEO_DIR):
-    print(f"❌ Error: '{VIDEO_DIR}' folder nahi mila. Kripya video folder banayein.")
-    exit(1)
-
-# Agar history.txt nahi hai, toh automatically bana dega
 if not os.path.exists(HISTORY_FILE):
     open(HISTORY_FILE, 'w').close()
 
-# 2. History read karna taaki video repeat na ho
 with open(HISTORY_FILE, 'r') as f:
     posted_videos = f.read().splitlines()
 
-# Saare videos nikalna (jo .mp4 format mein hain)
-all_videos = [f for f in os.listdir(VIDEO_DIR) if f.endswith('.mp4')]
-
-# Filter karna jo post nahi hue hain
-available_videos = [v for v in all_videos if v not in posted_videos]
-
-if not available_videos:
-    print("❌ Saare videos post ho chuke hain! Naye videos daalein ya history.txt clear karein.")
+# ==========================================
+# 4. FETCH AND SELECT VIDEO FROM CLOUDINARY
+# ==========================================
+print(f"🔍 Fetching videos from Cloudinary folder: '{CLOUDINARY_FOLDER}'...")
+try:
+    result = Search()\
+        .expression(f'resource_type:video AND folder:{CLOUDINARY_FOLDER}')\
+        .sort_by('created_at', 'asc')\
+        .max_results(500)\
+        .execute()
+    
+    all_videos = result.get('resources', [])
+except Exception as e:
+    print(f"❌ Cloudinary se fetch karne mein error: {e}")
     exit(1)
 
-# 3. Naya video select karna
+if not all_videos:
+    print(f"❌ Cloudinary folder '{CLOUDINARY_FOLDER}' mein koi video nahi mila!")
+    exit(1)
+
+# Filter karna (jo history mein nahi hain)
+available_videos = [v for v in all_videos if v['public_id'] not in posted_videos]
+
+if not available_videos:
+    print("❌ Saare videos post ho chuke hain! Cloudinary mein naye videos daalein.")
+    exit(1)
+
+# Pehla available video select karna
 selected_video = available_videos[0]
+video_id = selected_video['public_id']
+video_url = selected_video['secure_url'] 
+video_name = selected_video['filename']
 
-# 🔗 4. VIDEO URL GENERATE KARNA (GitHub Raw Link)
-# Space ya special characters ko encode karna taaki link break na ho
-encoded_video_name = urllib.parse.quote(selected_video)
+print(f"🎬 Video Selected: {video_name} (ID: {video_id})")
 
-if GITHUB_REPO:
-    video_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/refs/heads/{GITHUB_BRANCH}/{VIDEO_DIR}/{encoded_video_name}"
-else:
-    # Agar local PC pe test kar rahe ho toh yeh aayega
-    video_url = f"https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/{VIDEO_DIR}/{encoded_video_name}"
-
-# 5. 50+ Universal Titles
+# ==========================================
+# 5. CONTENT GENERATION (Titles, Captions, Hashtags)
+# ==========================================
 titles = [
     "Wait for the end! 🤯", "You won't believe this transformation! 🚀", "Then vs. Now ✨", 
     "The ultimate glow up! 🔥", "This is so satisfying to watch! 😍", "Evolution at its finest! 🧬", 
@@ -74,7 +104,6 @@ titles = [
     "Pure perfection! 🤌", "Timeless classics upgraded 🕰️✨"
 ]
 
-# 6. 50+ Universal Captions
 captions = [
     "Drop a ❤️ if you love this! Let me know your thoughts in the comments! 👇", 
     "This transition is everything! ✨ What do you guys think?", 
@@ -128,17 +157,18 @@ captions = [
     "The modern-day renaissance. 🏛️ Drop your reactions below!"
 ]
 
-# 7. Platform Specific Hashtags
 hashtags = {
     "facebook": "#Viral #Trending #Nostalgia #Makeover #FBReels #VideoOfTheDay #Transformation #ThenAndNow #BeforeAndAfter",
     "instagram": "#ReelsInstagram #GlowUp #ExplorePage #TrendingReels #InstaDaily #VintageVsModern #Aesthetic #MakeoverMagic",
     "youtube": "#Shorts #YouTubeShorts #Trending #ViralVideo #TransformationShorts #Evolution #BeforeAndAfter #Satisfying"
 }
 
-# 8. Webhook ke liye JSON Payload tayyar karna
+# ==========================================
+# 6. WEBHOOK PAYLOAD CREATION
+# ==========================================
 payload = {
-    "video_name": selected_video,
-    "video_url": video_url,  # <-- YEH RAHA AAPKA NAYA VIDEO URL LOGIC
+    "video_name": video_name,
+    "video_url": video_url,
     "title": random.choice(titles),
     "caption": random.choice(captions),
     "hashtags_facebook": hashtags['facebook'],
@@ -146,21 +176,33 @@ payload = {
     "hashtags_youtube": hashtags['youtube']
 }
 
-print(f"🚀 Sending '{selected_video}' data to Webhook...")
+# ==========================================
+# 7. SEND TO WEBHOOK & AUTO-DELETE LOGIC
+# ==========================================
+print("🚀 Sending data to Webhook...")
 
 try:
-    # JSON format mein data bhej rahe hain (Webhook ke liye sabse best)
+    # 1. Webhook ko data bhejna
     response = requests.post(WEBHOOK_URL, json=payload, headers={"Content-Type": "application/json"})
     response.raise_for_status()
     
     print("✅ Success! Data webhook par chala gaya.")
-    print("📤 Payload Sent:\n", json.dumps(payload, indent=2))
     
-    # 9. Success hone ke baad hi History file update karna
+    # 2. Webhook Success hone par Cloudinary se delete karna
+    print(f"🗑️ Deleting video '{video_id}' from Cloudinary to save space...")
+    delete_response = cloudinary.uploader.destroy(video_id, resource_type="video")
+    
+    if delete_response.get('result') == 'ok':
+        print(f"✅ Video Cloudinary se successfully delete ho gaya!")
+    else:
+        print(f"⚠️ Warning: Video post ho gaya par Cloudinary se delete nahi hua. Reason: {delete_response}")
+    
+    # 3. Local History update karna (Log maintain karne ke liye)
     with open(HISTORY_FILE, 'a') as f:
-        f.write(selected_video + '\n')
-    print(f"📝 History update ho gayi: '{selected_video}' saved to history.txt")
+        f.write(video_id + '\n')
+    print(f"📝 Local History update ho gayi.")
 
 except requests.exceptions.RequestException as e:
-    print(f"❌ Webhook fail ho gaya: {e}")
+    # Agar webhook fail hua, toh delete wala code run nahi hoga
+    print(f"❌ Webhook fail ho gaya: {e}. Video Cloudinary se delete nahi kiya gaya taaki data loss na ho.")
     exit(1)
