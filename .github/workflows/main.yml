@@ -1,42 +1,54 @@
-name: USA FlioForge
+name: FlipForge
 
 on:
+  # 1. Schedule (USA Audience ke liye best time)
   schedule:
-    # 23:00 UTC = 6:00 PM EST (USA Evening Prime Time)
-    # Yeh automation 24 ghante mein sirf 1 baar chalega
+    # 23:00 UTC = ~7:00 PM EST (USA Evening Prime Time)
     - cron: '0 23 * * *' 
-  workflow_dispatch: # Isse aap manually bhi test kar sakte ho kabhi bhi
+  
+  # 2. Manual Trigger (Aap jab chahein button daba kar chala sakte hain)
+  workflow_dispatch: 
 
+# ==========================================
+# JOB SETUP
+# ==========================================
 jobs:
   post_video:
     runs-on: ubuntu-latest
     
-    # ⚠️ YEH SABSE ZAROORI HAI: Taaki GitHub bot history.txt ko wapas repo mein save kar sake
+    # Git push ke liye permissions (history.txt save karne ke liye)
     permissions:
-      contents: write 
+      contents: write
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: Install Dependencies
-        run: pip install requests
-
-      - name: Run Autopost Script
-        env:
-          # Aapka Pabbly/Make webhook yahan aayega
-          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
-        run: python autopost.py
-
-      - name: Commit and Push updated history.txt
         run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          python -m pip install --upgrade pip
+          pip install requests cloudinary
+
+      - name: Run Main Script
+        # Yahan hum GitHub Secrets ko Python script se link kar rahe hain
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
+          CLOUDINARY_API_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
+          CLOUDINARY_API_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
+          CLOUDINARY_FOLDER: ${{ secrets.CLOUDINARY_FOLDER }}
+        run: python main.py
+
+      - name: Commit and Push History Update
+        # Yeh step history.txt mein aaye naye log ko GitHub repo par save karega
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add history.txt
-          git commit -m "Automated update: Added posted video to history.txt" || echo "No changes to commit"
+          git commit -m "📝 Update history.txt after posting and deleting video" || echo "No changes to commit"
           git push
